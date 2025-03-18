@@ -1,0 +1,9 @@
+{
+	"name": "ksl-plugin-keepass",
+	"type": "module",
+	"main": "index.js",
+	"dependencies": {
+		"dotenv-flow": "^4.1.0",
+		"kdbxweb": "^2.1.1"
+	}
+}

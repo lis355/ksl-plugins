@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"path": "ksl-plugin-keepass"
+		},
+		{
+			"path": "ksl-plugin-email-copy-to-clipboard"
+		},
+		{
+			"path": "ksl-plugin-youtube-videoplayback-tg-uploader"
+		}
+	],
+	"settings": {
+	}
+}

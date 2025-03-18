@@ -1,0 +1,12 @@
+{
+	"name": "ksl-plugin-youtube-videoplayback-tg-uploader",
+	"version": "1.0.0",
+	"type": "module",
+	"main": "index.js",
+	"dependencies": {
+		"cli-progress": "^3.12.0",
+		"dotenv-flow": "^4.1.0",
+		"filenamify": "^6.0.0",
+		"telegraf": "^4.16.3"
+	}
+}

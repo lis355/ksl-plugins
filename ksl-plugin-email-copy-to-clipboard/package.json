@@ -1,0 +1,8 @@
+{
+	"name": "ksl-plugin-email-copy-to-clipboard",
+	"type": "module",
+	"main": "index.js",
+	"dependencies": {
+		"dotenv-flow": "^4.1.0"
+	}
+}
