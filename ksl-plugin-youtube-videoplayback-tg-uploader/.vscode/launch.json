@@ -12,7 +12,10 @@
 				"<node_internals>/**"
 			],
 			"program": "${workspaceFolder}/youtube.js",
-			"console": "integratedTerminal"
+			"console": "integratedTerminal",
+			"env": {
+				"NODE_NO_WARNINGS": "1"
+			}
 		}
 	]
 }

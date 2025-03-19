@@ -10,6 +10,8 @@ import { Telegraf, Input } from "telegraf";
 import cliProgress from "cli-progress";
 import filenamify from "filenamify";
 
+const TELEGRAM_MAXIMUM_FILE_SIZE_IN_BYTES = 50 * 1024 ** 2;
+
 dotenv({ path: import.meta.dirname });
 
 const rl = readline.createInterface({
@@ -21,12 +23,23 @@ async function readLine() {
 	return new Promise(resolve => rl.once("line", resolve));
 }
 
+async function readAnswer() {
+	let line;
+	do {
+		line = (await readLine()).toLowerCase();
+	} while (line !== "y" &&
+		line !== "n");
+
+	return line === "y";
+}
+
 function exit() {
 	console.log("Press any key...");
 
-	process.stdin.setRawMode(true);
-	process.stdin.resume();
-	process.stdin.on("data", () => process.exit(0));
+	process.stdin
+		.setRawMode(true)
+		.resume()
+		.on("data", () => process.exit(0));
 }
 
 function printErrorAndExit(error) {
@@ -52,13 +65,18 @@ function createProgressStream(onProgressCallback) {
 }
 
 function formatNumber(x) {
-	return Number((x / 1024 ** 2).toFixed(2));
+	return Number(x.toFixed(2));
+}
+
+function formatSizeInBytes(x) {
+	return formatNumber(x / 1024 ** 2);
 }
 
 async function run() {
 	if (!process.env.FFMPEG_PATH || !fs.existsSync(process.env.FFMPEG_PATH)) return printErrorAndExit(new Error("Bad FFMPEG_PATH"));
 	if (!process.env.TELEGRAM_BOT_TOKEN) return printErrorAndExit(new Error("Bad TELEGRAM_BOT_TOKEN"));
 	if (!process.env.TELEGRAM_CHAT_ID || !Number.isFinite(Number(process.env.TELEGRAM_CHAT_ID))) return printErrorAndExit(new Error("Bad TELEGRAM_CHAT_ID"));
+	if (!process.env.LOCAL_DIRECTORY || !fs.existsSync(process.env.LOCAL_DIRECTORY)) return printErrorAndExit(new Error("Bad LOCAL_DIRECTORY"));
 
 	let line;
 
@@ -71,11 +89,13 @@ async function run() {
 	console.log("Type video file link...");
 	line = await readLine();
 
-	let videoUrl;
+	let videoUrl, durationInSeconds;
 	try {
 		videoUrl = new URL(line);
 
 		if (videoUrl.searchParams.get("mime") !== "video/mp4") throw new Error("Bad url video format, expected video/mp4");
+		durationInSeconds = Number(videoUrl.searchParams.get("dur"));
+		if (!Number.isFinite(durationInSeconds)) throw new Error("No video duration on this url");
 	} catch (error) {
 		return printErrorAndExit(error);
 	}
@@ -90,21 +110,21 @@ async function run() {
 		return printErrorAndExit(error);
 	}
 
-	console.log(`Video file size is ${formatNumber(totalBytesAmount)} Mb`);
+	console.log(`Video file size is ${formatSizeInBytes(totalBytesAmount)} Mb`);
+	console.log(`Video file duration is ${formatNumber(durationInSeconds / 60)} minutes`);
 
 	console.log("Type video file name...");
 	line = await readLine();
 	let fileName = filenamify(line);
 
 	console.log("Extract only audio? (y/n)");
-	line = "";
-	do line = (await readLine()).toLowerCase(); while (line !== "y" && line !== "n");
-	const isExtractAudio = line === "y";
+	const isExtractAudio = await readAnswer();
+
+	console.log("Keep file on disk? (y/n)");
+	let isKeepFileOnDisk = await readAnswer();
 
 	const extension = isExtractAudio ? ".mp3" : ".mp4";
 	if (path.extname(fileName).toLowerCase() !== extension) fileName += extension;
-
-	console.log(`Downloading video file ${fileName}`);
 
 	const downloadProgressBar = new cliProgress.SingleBar({
 		format: "{bar} | {percentage}% || {value}/{total} Mb",
@@ -116,16 +136,22 @@ async function run() {
 	const responseBodyStream = Readable.fromWeb(response.body);
 
 	let stream = responseBodyStream
-		.once("data", () => {
-			downloadProgressBar.start(formatNumber(totalBytesAmount), 0);
-		})
-		.once("close", () => {
-			downloadProgressBar.update(formatNumber(totalBytesAmount));
-			downloadProgressBar.stop();
-		})
-		.pipe(createProgressStream(downloadedBytesAmount => {
-			downloadProgressBar.update(formatNumber(downloadedBytesAmount));
-		}));
+		.pipe(
+			createProgressStream(downloadedBytesAmount => {
+				downloadProgressBar.update(formatSizeInBytes(downloadedBytesAmount));
+			})
+				.once("data", () => {
+					console.log(`Downloading video file ${fileName}`);
+
+					downloadProgressBar.start(formatSizeInBytes(totalBytesAmount), 0);
+				})
+				.once("close", () => {
+					downloadProgressBar.update(formatSizeInBytes(totalBytesAmount));
+					downloadProgressBar.stop();
+
+					console.log("Downloading finished");
+				})
+		);
 
 	const streamToUpload = new PassThrough()
 		.once("data", () => {
@@ -133,10 +159,6 @@ async function run() {
 		.once("close", () => {
 			console.log("Uploading finished");
 		});
-
-	const telegramBot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-	const telegramSendMethod = (isExtractAudio ? telegramBot.telegram.sendAudio : telegramBot.telegram.sendDocument).bind(telegramBot.telegram);
-	const telegramSendFilePromise = telegramSendMethod(Number(process.env.TELEGRAM_CHAT_ID), Input.fromReadableStream(streamToUpload, fileName));
 
 	if (isExtractAudio) {
 		const converterProcess = spawn(`"${process.env.FFMPEG_PATH}" -v quiet -i pipe:0 -b:a 160k -f mp3 pipe:1`, { shell: true });
@@ -152,17 +174,28 @@ async function run() {
 			});
 	}
 
-	stream = stream
-		.pipe(streamToUpload);
+	const fileLocalPath = path.resolve(process.env.LOCAL_DIRECTORY, fileName);
+	await finished(stream
+		.pipe(fs.createWriteStream(fileLocalPath))
+	);
 
-	await Promise.all([
-		finished(stream),
-		telegramSendFilePromise
-	]);
+	if (fs.statSync(fileLocalPath).size < TELEGRAM_MAXIMUM_FILE_SIZE_IN_BYTES) {
+		const telegramBot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+		const telegramSendMethod = (isExtractAudio ? telegramBot.telegram.sendAudio : telegramBot.telegram.sendDocument).bind(telegramBot.telegram);
 
-	console.log(`Finish uploading file ${fileName}`);
+		console.log(`Start uploading file ${fileName}`);
 
-	process.exit(0);
+		await telegramSendMethod(Number(process.env.TELEGRAM_CHAT_ID), Input.fromReadableStream(streamToUpload, fileName));
+
+		console.log(`Finish uploading file ${fileName}`);
+	} else {
+		isKeepFileOnDisk = true;
+	}
+
+	if (isKeepFileOnDisk) spawn("explorer", [process.env.LOCAL_DIRECTORY.replaceAll("/", "\\")]);
+	else fs.unlinkSync(fileName);
+
+	return exit();
 }
 
 run();
